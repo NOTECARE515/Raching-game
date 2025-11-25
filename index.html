@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Cycle Racing (Phaser + Matter) — Mobile-ready</title>
+  <style>
+    html,body{height:100%;margin:0;background:#1b1b2f;color:#fff;font-family:Arial}
+    #gameContainer{width:100%;height:100vh;overflow:hidden;touch-action:none}
+    .ui {position: absolute; z-index: 10; top: 8px; left: 8px; font-size: 14px}
+    .btn {position: absolute; width:64px; height:64px; border-radius:12px; background: rgba(255,255,255,0.08); display:flex;align-items:center;justify-content:center;backdrop-filter: blur(4px); border:1px solid rgba(255,255,255,0.06)}
+    .btn:active{transform: scale(0.96)}
+    #accel {right: 12px; bottom: 84px}
+    #brake {right: 12px; bottom: 12px}
+    #left {left: 12px; bottom: 12px}
+    #right {left: 92px; bottom: 12px}
+    .label{font-size:12px;opacity:.9}
+  </style>
+</head>
+<body>
+  <div id="gameContainer"></div>
+
+  <!-- On-screen controls -->
+  <div id="accel" class="btn" style="position:fixed"><div class="label">▲</div></div>
+  <div id="brake" class="btn" style="position:fixed"><div class="label">■</div></div>
+  <div id="left" class="btn" style="position:fixed"><div class="label">◀</div></div>
+  <div id="right" class="btn" style="position:fixed"><div class="label">▶</div></div>
+
+  <!-- Phaser 3 (CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+  <script>
+  // Mobile-friendly cycle racing using Phaser 3 + Matter physics
+  // Single-file — drop as index.html into a repo and publish via GitHub Pages
+
+  const config = {
+    type: Phaser.AUTO,
+    parent: 'gameContainer',
+    width: window.innerWidth,
+    height: window.innerHeight,
+    backgroundColor: '#1b1b2f',
+    physics: {
+      default: 'matter',
+      matter: {
+        gravity: { y: 1.2 }, // tune for heavier feel
+        debug: false
+      }
+    },
+    scene: {
+      preload: preload,
+      create: create,
+      update: update
+    }
+  };
+
+  const game = new Phaser.Game(config);
+
+  let bike, rearWheel, frontWheel, chassis, trackGroup;
+  let cursors;
+  let controls = { accel:false, brake:false, left:false, right:false };
+
+  function preload() {
+    // No external image assets: draw simple shapes
+  }
+
+  function create() {
+    const scene = this;
+
+    // Resize on orientation change
+    window.addEventListener('resize', ()=>{
+      scene.scale.resize(window.innerWidth, window.innerHeight);
+    });
+
+    // Ground / track generator (some ramps and bumps)
+    trackGroup = scene.add.group();
+
+    const startX = 0;
+    let x = startX;
+    const groundY = scene.scale.height - 120;
+
+    // create a long procedural track made of static bodies
+    const matter = scene.matter;
+
+    // helper to add static platform
+    function addPlatform(x, y, w, h, angle=0) {
+      const rect = matter.add.rectangle(x + w/2, y + h/2, w, h, { isStatic: true, angle: angle });
+      return rect;
+    }
+
+    // start flat
+    addPlatform(x, groundY, 1200, 64);
+    x += 1200;
+
+    // sequence of bumps/ramps
+    for (let i=0;i<25;i++){
+      const wide = Phaser.Math.Between(160, 520);
+      const gap = Phaser.Math.Between(40, 120);
+      const bumpHeight = Phaser.Math.Between(-140, 120);
+      const yTop = groundY + bumpHeight;
+      addPlatform(x, yTop, wide, 48);
+      x += wide + gap;
+    }
+
+    // finish flat
+    addPlatform(x, groundY, 2400, 64);
+
+    // Visuals: simple sky and track lines
+    const sky = scene.add.rectangle(0,0,scene.scale.width*10, scene.scale.height, 0x0f1724).setOrigin(0);
+
+    // Bike composite using matter bodies
+    const startBikeX = 200;
+    const startBikeY = groundY - 120;
+
+    // wheels
+    rearWheel = matter.add.circle(startBikeX - 24, startBikeY + 24, 28, { mass: 2, friction: 0.9, restitution: 0.05 });
+    frontWheel = matter.add.circle(startBikeX + 48, startBikeY + 24, 28, { mass: 2, friction: 0.9, restitution: 0.05 });
+
+    // chassis rectangle
+    chassis = matter.add.rectangle(startBikeX + 12, startBikeY - 10, 120, 22, { mass: 4, chamfer: { radius: 6 } });
+
+    // constraints to attach wheels to chassis (suspension feel)
+    const rearConstraint = matter.add.constraint(chassis, rearWheel, 40, 0.6, { pointA: { x:-36, y:10 }, pointB: { x:0, y:0 } });
+    const frontConstraint = matter.add.constraint(chassis, frontWheel, 40, 0.6, { pointA: { x:36, y:10 }, pointB: { x:0, y:0 } });
+
+    // make a compound gameObject for easier rendering
+    bike = scene.add.container(0,0);
+    // simple graphics for chassis and wheels
+    const gfxChassis = scene.add.rectangle(0,0,120,22,0xffd27f).setOrigin(0.5);
+    const gfxRear = scene.add.circle(0,0,28,0x8fbfdf).setOrigin(0.5);
+    const gfxFront = scene.add.circle(0,0,28,0x8fbfdf).setOrigin(0.5);
+    bike.add([gfxChassis, gfxRear, gfxFront]);
+
+    // attach matter bodies to display objects via Phaser's Game Object Matter bridge not used; manual sync
+    bike._parts = { chassis: chassis, rearWheel: rearWheel, frontWheel: frontWheel, gfx: { chassis:gfxChassis, rear:gfxRear, front:gfxFront } };
+
+    // camera follow
+    scene.cameras.main.startFollow({ x: startBikeX, y:startBikeY }, true, 0.08, 0.08);
+    scene.cameras.main.setLerp(0.12,0.12);
+    scene.cameras.main.setBounds(-200, -200, 20000, scene.scale.height+400);
+
+    // small HUD
+    scene.add.text(12,12,'Cycle Racing — Mobile
+Controls: touch buttons or arrow keys', { fontSize:'14px', lineHeight: '18px'}).setScrollFactor(0);
+
+    // keyboard
+    cursors = scene.input.keyboard.createCursorKeys();
+
+    // Setup touch areas (HTML elements) to update controls
+    const accelEl = document.getElementById('accel');
+    const brakeEl = document.getElementById('brake');
+    const leftEl = document.getElementById('left');
+    const rightEl = document.getElementById('right');
+
+    [[accelEl,'accel'],[brakeEl,'brake'],[leftEl,'left'],[rightEl,'right']].forEach(([el,name])=>{
+      el.addEventListener('touchstart', (e)=>{ e.preventDefault(); controls[name]=true }, {passive:false});
+      el.addEventListener('touchend', (e)=>{ e.preventDefault(); controls[name]=false }, {passive:false});
+      el.addEventListener('mousedown', ()=>controls[name]=true);
+      el.addEventListener('mouseup', ()=>controls[name]=false);
+      el.addEventListener('mouseleave', ()=>controls[name]=false);
+    });
+
+    // optional: tighten collisions so bike doesn't tumble too much
+    scene.matter.world.localWorld.gravity.y = 1.2;
+
+    // keep clamping maximum angular velocity
+    scene.events.on('postupdate', ()=>{
+      // limit spin of wheels for stability
+      const maxSpin = 10;
+      if (rearWheel.angularSpeed > maxSpin) rearWheel.angularSpeed = maxSpin;
+      if (frontWheel.angularSpeed > maxSpin) frontWheel.angularSpeed = maxSpin;
+    });
+  }
+
+  function update(time, delta) {
+    const scene = this;
+    if (!chassis) return;
+
+    // Keyboard mapping
+    controls.accel = controls.accel || cursors.up.isDown;
+    controls.brake = controls.brake || cursors.down.isDown;
+    controls.left = controls.left || cursors.left.isDown;
+    controls.right = controls.right || cursors.right.isDown;
+
+    // Force values tuned for arcade + realistic feel
+    const wheelForce = 0.00045; // accelerate
+    const brakeForce = 0.0009; // brake / reverse
+    const steerTorque = 0.00018; // lean/steer
+
+    // Apply forward/reverse forces at wheel contact points
+    if (controls.accel) {
+      // apply forward tangential force to both wheels
+      applyTorqueToWheel(frontWheel, -wheelForce);
+      applyTorqueToWheel(rearWheel, -wheelForce*1.15);
+    }
+    if (controls.brake) {
+      applyTorqueToWheel(frontWheel, brakeForce);
+      applyTorqueToWheel(rearWheel, brakeForce*1.1);
+    }
+
+    // Lateral/steering: apply small torque to chassis to tilt
+    if (controls.left) {
+      scene.matter.applyForce(chassis, { x: chassis.position.x, y: chassis.position.y }, { x: -steerTorque, y: 0 });
+      // add slight angular velocity to wheel to mimic pedaling adjustment
+      rearWheel.angularSpeed -= 0.01;
+    }
+    if (controls.right) {
+      scene.matter.applyForce(chassis, { x: chassis.position.x, y: chassis.position.y }, { x: steerTorque, y: 0 });
+      rearWheel.angularSpeed += 0.01;
+    }
+
+    // Simple stability assist: if falling too fast, damp angular velocity
+    const ang = chassis.angle;
+    if (Math.abs(ang) > 1.8) {
+      // big flip — slightly push up to reduce tumble
+      scene.matter.applyForce(chassis, chassis.position, { x:0, y:-0.02 });
+    }
+
+    // Sync visual sprites positions with matter bodies
+    const parts = bike._parts;
+    const c = parts.chassis;
+    const rw = parts.rearWheel;
+    const fw = parts.frontWheel;
+    const gfx = parts.gfx;
+
+    gfx.chassis.x = c.position.x; gfx.chassis.y = c.position.y; gfx.chassis.rotation = c.angle;
+    gfx.rear.x = rw.position.x; gfx.rear.y = rw.position.y; gfx.rear.rotation = rw.angle;
+    gfx.front.x = fw.position.x; gfx.front.y = fw.position.y; gfx.front.rotation = fw.angle;
+
+    // Camera follow the chassis
+    scene.cameras.main.centerOn(c.position.x + 40, c.position.y - 30);
+  }
+
+  // helper: apply tangential force to wheel to make it roll
+  function applyTorqueToWheel(wheel, force) {
+    // apply a force at wheel perimeter in the tangential direction to simulate torque
+    // compute tangent vector from wheel angle
+    const x = wheel.position.x;
+    const y = wheel.position.y;
+    const angle = wheel.angle;
+    // tangential force direction perpendicular to wheel radius
+    const fx = Math.cos(angle + Math.PI/2) * force;
+    const fy = Math.sin(angle + Math.PI/2) * force;
+    // local engine: apply at wheel center
+    wheel.force = wheel.force || { x:0, y:0 };
+    // Phaser MatterJS bridge requires using world-level applyForce through scene, but we can access engine
+    // Instead use Matter.Body.applyForce if accessible
+    if (window.Matter && window.Matter.Body && wheel) {
+      try {
+        window.Matter.Body.applyForce(wheel, { x:x, y:y }, { x:fx, y:fy });
+      } catch (e) {
+        // fallback using Phaser's applyForce
+        // scene.matter.applyForce(wheel, { x:x, y:y }, { x:fx, y:fy });
+      }
+    }
+  }
+
+  // small helper to expose Matter in window for apply
+  window.addEventListener('load', ()=>{
+    if (game && game.scene.scenes[0] && game.scene.scenes[0].matter && game.scene.scenes[0].matter.world) {
+      window.Matter = game.scene.scenes[0].matter.world.engine.Matter;
+    }
+  });
+
+  </script>
+</body>
+</html>
